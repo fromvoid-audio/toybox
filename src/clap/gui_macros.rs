@@ -1,4 +1,4 @@
-// Macro helpers that wire standard CLAP GUI callbacks to Patchbay.
+//! Standard CLAP callbacks for the embedded GUI backends.
 
 /// Inject default CLAP resize callbacks backed by Toybox Patchbay policy.
 ///

@@ -38,11 +38,15 @@ struct RecordingHostedGui {
     events: Mutex<Vec<&'static str>>,
 }
 
+/// Shared callback slot for synchronous removal during host callbacks.
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+type RemoveCallback = Rc<RefCell<Option<Box<dyn FnMut()>>>>;
+
 /// Exercises the host callback path that can synchronously remove a view
 /// while another VST3 callback still owns the GUI mutex.
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 struct ReentrantRemovedGui {
-    remove: Rc<RefCell<Option<Box<dyn FnMut()>>>>,
+    remove: RemoveCallback,
     closes: Rc<Cell<usize>>,
     remove_on_open: bool,
 }

@@ -1,9 +1,10 @@
 # Embedded GPUI editors
 
-Enable `toybox/gpui-gui` for CLAP editors or `toybox/gpui-vst3` for VST3.
-Use `toybox::gpui` for GPUI types so the view and hosting platform always use
-the same dependency revision. Toybox's default features stay empty; existing
-Radiant and Patchbay consumers can continue enabling their explicit features.
+Toybox enables `gpui-gui` by default for CLAP editors. Enable `gpui-vst3` for
+the VST3 editor adapter. Use `toybox::gpui` for GPUI types so the view and
+hosting platform use the same dependency revision. DSP-only consumers can
+set `default-features = false`. Radiant and Patchbay consumers can pair this
+opt-out with their explicit backend feature.
 
 ## Ownership
 
@@ -62,7 +63,7 @@ facade lock.
 
 ## Validation
 
-Run `cargo test -p toybox --features gpui-gui` for portable backend tests and
+Run `cargo test -p toybox` for portable backend tests and
 `cargo test -p toybox --features gpui-vst3` with an initialized `VST3_SDK_DIR`
 for format integration. Native AppKit smoke programs must execute on the
 process main thread, not a Rust test worker thread. Windows native behavior

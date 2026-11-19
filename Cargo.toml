@@ -52,7 +52,7 @@ windows_061 = { package = "windows", version = "0.61", default-features = false,
 windows-core = "=0.62.2"
 
 [features]
-default = []
+default = ["gpui-gui"]
 # The legacy `objc` macros probe this cfg internally. Declaring it keeps those
 # expansions compatible with Cargo's checked-cfg lint on current toolchains.
 cargo-clippy = []

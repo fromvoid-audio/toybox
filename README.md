@@ -14,10 +14,10 @@
 
 ## GUI development
 
-Use the `gpui-gui` feature for new plugin editors on macOS and Windows, or
-`gpui-vst3` when building VST3. Toybox embeds GPUI in the host's native child
-window and leaves the host in charge of the event loop. The default feature
-set remains empty for DSP-only consumers.
+GPUI is enabled by default for new plugin editors on macOS and Windows.
+Enable `gpui-vst3` when building a VST3 editor. Toybox embeds GPUI in the
+host's native child window and leaves the host in charge of the event loop.
+DSP-only consumers can set `default-features = false`.
 
 See [the embedded GPUI guide](docs/GPUI.md) for ownership, input, and lifecycle
 requirements. Existing Radiant and Patchbay integrations remain optional during
