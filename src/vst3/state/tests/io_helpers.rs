@@ -19,6 +19,8 @@ pub struct FakeStream {
     pub data: Vec<u8>,
     /// Current cursor position in bytes.
     pub cursor: usize,
+    /// Whether to report one extra byte without transferring it.
+    pub overreport_count: bool,
 }
 
 impl FakeStream {
@@ -30,18 +32,13 @@ impl FakeStream {
             },
             data: payload,
             cursor: 0,
+            overreport_count: false,
         }
     }
 
     /// Construct an empty stream used by write tests.
     pub fn write() -> Self {
-        Self {
-            base: IBStream {
-                vtbl: &STREAM_VTABLE,
-            },
-            data: Vec::new(),
-            cursor: 0,
-        }
+        Self::read(Vec::new())
     }
 
     /// Return a mutable pointer to the underlying COM object.
@@ -121,7 +118,10 @@ unsafe extern "system" fn fake_read(
     }
 
     if !num_bytes_read.is_null() {
-        unsafe { *num_bytes_read = to_read as int32 };
+        unsafe {
+            *num_bytes_read =
+                (to_read as int32).saturating_add(int32::from(stream.overreport_count))
+        };
     }
     kResultOk
 }
@@ -148,7 +148,9 @@ unsafe extern "system" fn fake_write(
     }
 
     if !num_bytes_written.is_null() {
-        unsafe { *num_bytes_written = num_bytes };
+        unsafe {
+            *num_bytes_written = num_bytes.saturating_add(int32::from(stream.overreport_count))
+        };
     }
     kResultOk
 }

@@ -4,7 +4,7 @@ use std::ptr;
 
 use super::io_helpers::{FakeStream, MAGIC};
 use crate::vst3::state::{
-    MAX_STATE_PAYLOAD_BYTES as STATE_LIMIT, StreamError, encode_versioned_payload,
+    MAX_STATE_PAYLOAD_BYTES as STATE_LIMIT, StreamError, encode_versioned_payload, read_exact,
     read_versioned_payload, write_all, write_versioned_payload,
 };
 
@@ -28,6 +28,24 @@ fn write_all_round_trip() {
     let payload = [1u8, 2, 3, 4, 5];
     unsafe { write_all(stream.as_ptr(), &payload).expect("write should succeed") };
     assert_eq!(stream.data, payload);
+}
+
+#[test]
+fn stream_rejects_counts_larger_than_the_requested_transfer() {
+    let bytes = [1, 2, 3];
+    let mut output = FakeStream::write();
+    output.overreport_count = true;
+    assert_eq!(
+        unsafe { write_all(output.as_ptr(), &bytes) },
+        Err(StreamError::IoFailure)
+    );
+
+    let mut input = FakeStream::read(bytes.to_vec());
+    input.overreport_count = true;
+    assert_eq!(
+        unsafe { read_exact(input.as_ptr(), &mut [0; 3]) },
+        Err(StreamError::IoFailure)
+    );
 }
 
 #[test]

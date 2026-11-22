@@ -2,6 +2,7 @@
 
 use std::fmt;
 
+use crate::state::HeaderError;
 pub use crate::state::MAX_STATE_PAYLOAD_BYTES;
 
 /// Internal codec helpers for VST3 payload encoding and decoding.
@@ -11,10 +12,6 @@ mod io;
 
 pub use codec::{decode_versioned_payload, try_encode_versioned_payload};
 pub use io::{read_exact, read_versioned_payload, write_all, write_versioned_payload};
-
-/// Panic message used by the compatibility wrapper when payload encoding exceeds
-/// the supported size.
-const VST3_STATE_PAYLOAD_TOO_LARGE_ERROR: &str = "VST3 state payload is too large";
 
 /// Serialized state payload read from a versioned stream.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -30,7 +27,7 @@ pub struct VersionedPayload {
 pub enum StreamError {
     /// The host supplied a null stream pointer.
     NullStream,
-    /// The VST3 stream method returned a failure code.
+    /// The VST3 stream method failed or reported more bytes than requested.
     IoFailure,
     /// The stream ended before all requested bytes were read.
     UnexpectedEof,
@@ -62,30 +59,26 @@ impl fmt::Display for StreamError {
 
 impl std::error::Error for StreamError {}
 
-/// Validate that a payload length is within the supported state limit.
-///
-/// Returns [`StreamError::PayloadTooLarge`] when the length exceeds
-/// [`MAX_STATE_PAYLOAD_BYTES`].
-fn check_payload_length(length: usize) -> Result<(), StreamError> {
-    if length > MAX_STATE_PAYLOAD_BYTES {
-        return Err(StreamError::PayloadTooLarge);
+impl From<HeaderError> for StreamError {
+    fn from(error: HeaderError) -> Self {
+        match error {
+            HeaderError::InvalidMagic => Self::InvalidMagic,
+            HeaderError::UnsupportedVersion => Self::UnsupportedVersion,
+            HeaderError::PayloadTooLarge => Self::PayloadTooLarge,
+        }
     }
-    Ok(())
 }
 
 /// Compatibility entrypoint for writing a versioned payload.
 ///
-/// This remains a compatibility API for existing callers. It will panic if the
-/// payload length exceeds [`MAX_STATE_PAYLOAD_BYTES`]; prefer
-/// [`try_encode_versioned_payload`] for fallible handling.
+/// Prefer [`try_encode_versioned_payload`] for fallible handling.
 ///
 /// # Panics
 ///
-/// Panics with [`VST3_STATE_PAYLOAD_TOO_LARGE_ERROR`] when encoding would
-/// exceed [`MAX_STATE_PAYLOAD_BYTES`].
+/// Panics if the payload exceeds [`MAX_STATE_PAYLOAD_BYTES`].
 pub fn encode_versioned_payload(magic: u32, version: u32, payload: &[u8]) -> Vec<u8> {
     let Ok(bytes) = try_encode_versioned_payload(magic, version, payload) else {
-        panic!("{VST3_STATE_PAYLOAD_TOO_LARGE_ERROR}");
+        panic!("VST3 state payload is too large");
     };
 
     bytes
