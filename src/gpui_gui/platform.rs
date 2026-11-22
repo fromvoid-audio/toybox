@@ -8,11 +8,10 @@ use std::collections::{HashMap, VecDeque};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::rc::{Rc, Weak};
-use std::sync::{Arc, Condvar, Mutex};
-use std::thread::{self, ThreadId};
-use std::time::{Duration, Instant};
+use std::sync::{Arc, Mutex};
 
 use super::PostEffectHandle;
+use super::dispatcher::EmbeddedDispatcher;
 use anyhow::Result;
 use futures::channel::oneshot;
 #[cfg(target_os = "windows")]
@@ -23,9 +22,9 @@ use gpui::{
     DummyKeyboardMapper, ForegroundExecutor, GpuSpecs, KeyDownEvent, KeyUpEvent, Keymap, Keystroke,
     Modifiers, PathPromptOptions, Pixels, Platform, PlatformAtlas, PlatformDisplay, PlatformInput,
     PlatformInputHandler, PlatformKeyboardLayout, PlatformKeyboardMapper, PlatformTextSystem,
-    PlatformWindow, Point, Priority, PromptButton, RequestFrameOptions, Scene, Size, Task,
-    ThermalState, TileId, WindowAppearance, WindowBackgroundAppearance, WindowBounds,
-    WindowControlArea, WindowParams, point, px, size,
+    PlatformWindow, Point, PromptButton, RequestFrameOptions, Scene, Size, Task, ThermalState,
+    TileId, WindowAppearance, WindowBackgroundAppearance, WindowBounds, WindowControlArea,
+    WindowParams, point, px, size,
 };
 use gpui_wgpu::CosmicTextSystem;
 use raw_window_handle_06::{
@@ -67,380 +66,6 @@ pub(crate) fn host_to_logical_size(width: u32, height: u32, scale: f32) -> (u32,
         ((width.max(1) as f32 / scale).round() as u32).max(1),
         ((height.max(1) as f32 / scale).round() as u32).max(1),
     )
-}
-
-/// A foreground/background dispatcher driven by the host's UI thread.
-///
-/// GPUI never starts an application-owned event loop here. Main-thread tasks
-/// are queued until [`EmbeddedPlatform::pump`] is called by the native child
-/// view or by the plugin host's UI callback.
-pub(crate) struct EmbeddedDispatcher {
-    state: Arc<DispatcherState>,
-}
-
-struct DispatcherState {
-    main_thread: ThreadId,
-    stopped: std::sync::atomic::AtomicBool,
-    failed: std::sync::atomic::AtomicBool,
-    main_queue: Mutex<VecDeque<gpui::RunnableVariant>>,
-    background_queue: Mutex<VecDeque<WorkItem>>,
-    timers: Mutex<VecDeque<(Instant, gpui::RunnableVariant)>>,
-    worker_wakeup: Condvar,
-    worker: Mutex<Option<thread::JoinHandle<()>>>,
-}
-
-enum WorkItem {
-    Runnable(gpui::RunnableVariant),
-    Realtime(Box<dyn FnOnce() + Send>),
-}
-
-impl EmbeddedDispatcher {
-    pub(crate) fn new() -> Arc<Self> {
-        let state = Arc::new(DispatcherState {
-            main_thread: thread::current().id(),
-            stopped: std::sync::atomic::AtomicBool::new(false),
-            failed: std::sync::atomic::AtomicBool::new(false),
-            main_queue: Mutex::new(VecDeque::new()),
-            background_queue: Mutex::new(VecDeque::new()),
-            timers: Mutex::new(VecDeque::new()),
-            worker_wakeup: Condvar::new(),
-            worker: Mutex::new(None),
-        });
-        let weak_state = Arc::downgrade(&state);
-        let worker = thread::Builder::new()
-            .name("toybox-gpui-worker".to_string())
-            .spawn(move || {
-                loop {
-                    let Some(state) = weak_state.upgrade() else {
-                        break;
-                    };
-                    let runnable = {
-                        let mut queue = match state.background_queue.lock() {
-                            Ok(queue) => queue,
-                            Err(_) => {
-                                state
-                                    .failed
-                                    .store(true, std::sync::atomic::Ordering::Release);
-                                state
-                                    .stopped
-                                    .store(true, std::sync::atomic::Ordering::Release);
-                                state.worker_wakeup.notify_all();
-                                return;
-                            }
-                        };
-                        loop {
-                            if state.stopped.load(std::sync::atomic::Ordering::Acquire) {
-                                return;
-                            }
-                            if let Some(runnable) = queue.pop_front() {
-                                break runnable;
-                            }
-                            queue = match state.worker_wakeup.wait(queue) {
-                                Ok(queue) => queue,
-                                Err(_) => {
-                                    state
-                                        .failed
-                                        .store(true, std::sync::atomic::Ordering::Release);
-                                    state
-                                        .stopped
-                                        .store(true, std::sync::atomic::Ordering::Release);
-                                    state.worker_wakeup.notify_all();
-                                    return;
-                                }
-                            };
-                        }
-                    };
-                    if state.stopped.load(std::sync::atomic::Ordering::Acquire) {
-                        drop(runnable);
-                        continue;
-                    }
-                    let result =
-                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match runnable {
-                            WorkItem::Runnable(runnable) => {
-                                let _ = runnable.run();
-                            }
-                            WorkItem::Realtime(callback) => {
-                                callback();
-                            }
-                        }));
-                    if result.is_err() {
-                        state
-                            .failed
-                            .store(true, std::sync::atomic::Ordering::Release);
-                        state
-                            .stopped
-                            .store(true, std::sync::atomic::Ordering::Release);
-                        state.worker_wakeup.notify_all();
-                        return;
-                    }
-                }
-            })
-            .expect("failed to start GPUI dispatcher worker");
-        *state.worker.lock().expect("GPUI worker lock poisoned") = Some(worker);
-        Arc::new(Self { state })
-    }
-
-    pub(crate) fn pump(&self) {
-        if thread::current().id() != self.state.main_thread
-            || self
-                .state
-                .stopped
-                .load(std::sync::atomic::Ordering::Acquire)
-        {
-            return;
-        }
-        let now = Instant::now();
-        let mut ready = Vec::new();
-        match self.state.timers.lock() {
-            Ok(mut timers) => {
-                let mut pending = VecDeque::new();
-                while let Some((deadline, runnable)) = timers.pop_front() {
-                    if deadline <= now {
-                        ready.push(runnable);
-                    } else {
-                        pending.push_back((deadline, runnable));
-                    }
-                }
-                *timers = pending;
-            }
-            Err(_) => {
-                self.fail_runtime();
-                return;
-            }
-        }
-        if !ready.is_empty() {
-            let mut accepted = false;
-            match self.state.main_queue.lock() {
-                Ok(mut queue)
-                    if !self
-                        .state
-                        .stopped
-                        .load(std::sync::atomic::Ordering::Acquire)
-                        && queue.len().saturating_add(ready.len()) <= 1024 =>
-                {
-                    queue.extend(ready.drain(..));
-                    accepted = true;
-                }
-                Ok(_) => {}
-                Err(_) => {
-                    self.fail_runtime();
-                    return;
-                }
-            }
-            if !accepted {
-                self.fail_overflow();
-            }
-        }
-        for _ in 0..64 {
-            let runnable = match self.state.main_queue.lock() {
-                Ok(mut queue) => queue.pop_front(),
-                Err(_) => {
-                    self.fail_runtime();
-                    return;
-                }
-            };
-            let Some(runnable) = runnable else {
-                break;
-            };
-            if self
-                .state
-                .stopped
-                .load(std::sync::atomic::Ordering::Acquire)
-            {
-                drop(runnable);
-                continue;
-            }
-            if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| runnable.run())).is_err() {
-                self.fail_runtime();
-                return;
-            }
-        }
-    }
-
-    pub(crate) fn stop(&self) {
-        self.state
-            .stopped
-            .store(true, std::sync::atomic::Ordering::Release);
-        self.state.worker_wakeup.notify_all();
-        let worker = self
-            .state
-            .worker
-            .lock()
-            .ok()
-            .and_then(|mut worker| worker.take());
-        if let Some(worker) = worker {
-            if worker.thread().id() != thread::current().id() {
-                let _ = worker.join();
-            } else if let Ok(mut slot) = self.state.worker.lock() {
-                // A realtime callback may request shutdown from the worker.
-                // Keep the handle owned until a host-thread stop can join it;
-                // dropping it here would detach code from an unloading DLL.
-                *slot = Some(worker);
-            }
-        }
-
-        // Take queued captures out of their locks before dropping them. A
-        // GPUI task destructor can schedule more work, and dropping it while
-        // holding one of these locks would deadlock that reentrant enqueue.
-        let main_queue = match self.state.main_queue.lock() {
-            Ok(mut queue) => Some(std::mem::take(&mut *queue)),
-            Err(_) => {
-                self.fail_runtime();
-                None
-            }
-        };
-        let background_queue = match self.state.background_queue.lock() {
-            Ok(mut queue) => Some(std::mem::take(&mut *queue)),
-            Err(_) => {
-                self.fail_runtime();
-                None
-            }
-        };
-        let timers = match self.state.timers.lock() {
-            Ok(mut timers) => Some(std::mem::take(&mut *timers)),
-            Err(_) => {
-                self.fail_runtime();
-                None
-            }
-        };
-        drop(main_queue);
-        drop(background_queue);
-        drop(timers);
-    }
-
-    pub(crate) fn failed(&self) -> bool {
-        self.state.failed.load(std::sync::atomic::Ordering::Acquire)
-    }
-
-    fn fail_overflow(&self) {
-        self.state
-            .failed
-            .store(true, std::sync::atomic::Ordering::Release);
-        self.state
-            .stopped
-            .store(true, std::sync::atomic::Ordering::Release);
-        self.state.worker_wakeup.notify_all();
-    }
-
-    fn fail_runtime(&self) {
-        self.state
-            .failed
-            .store(true, std::sync::atomic::Ordering::Release);
-        self.state
-            .stopped
-            .store(true, std::sync::atomic::Ordering::Release);
-        self.state.worker_wakeup.notify_all();
-    }
-
-    fn enqueue_background(&self, item: WorkItem) {
-        let mut item = Some(item);
-        let mut overflow = false;
-        let mut poisoned = false;
-        match self.state.background_queue.lock() {
-            Ok(mut queue)
-                if !self
-                    .state
-                    .stopped
-                    .load(std::sync::atomic::Ordering::Acquire) =>
-            {
-                if queue.len() < 1024 {
-                    queue.push_back(item.take().expect("work item present"));
-                } else {
-                    overflow = true;
-                }
-            }
-            Ok(_) => {}
-            Err(_) => poisoned = true,
-        }
-        let accepted = item.is_none();
-        drop(item);
-        if poisoned {
-            self.fail_runtime();
-        } else if overflow {
-            self.fail_overflow();
-        } else if accepted {
-            self.state.worker_wakeup.notify_one();
-        }
-    }
-}
-
-impl Drop for EmbeddedDispatcher {
-    fn drop(&mut self) {
-        self.stop();
-    }
-}
-
-impl gpui::PlatformDispatcher for EmbeddedDispatcher {
-    fn is_main_thread(&self) -> bool {
-        thread::current().id() == self.state.main_thread
-    }
-
-    fn dispatch(&self, runnable: gpui::RunnableVariant, _priority: Priority) {
-        self.enqueue_background(WorkItem::Runnable(runnable));
-    }
-
-    fn dispatch_on_main_thread(&self, runnable: gpui::RunnableVariant, _priority: Priority) {
-        let mut runnable = Some(runnable);
-        let mut overflow = false;
-        let mut poisoned = false;
-        match self.state.main_queue.lock() {
-            Ok(mut queue)
-                if !self
-                    .state
-                    .stopped
-                    .load(std::sync::atomic::Ordering::Acquire) =>
-            {
-                if queue.len() < 1024 {
-                    queue.push_back(runnable.take().expect("runnable present"));
-                } else {
-                    overflow = true;
-                }
-            }
-            Ok(_) => {}
-            Err(_) => poisoned = true,
-        }
-        drop(runnable);
-        if poisoned {
-            self.fail_runtime();
-        } else if overflow {
-            self.fail_overflow();
-        }
-    }
-
-    fn dispatch_after(&self, duration: Duration, runnable: gpui::RunnableVariant) {
-        let mut runnable = Some(runnable);
-        let mut overflow = false;
-        let mut poisoned = false;
-        match self.state.timers.lock() {
-            Ok(mut timers)
-                if !self
-                    .state
-                    .stopped
-                    .load(std::sync::atomic::Ordering::Acquire) =>
-            {
-                if timers.len() < 1024 {
-                    timers.push_back((
-                        Instant::now() + duration,
-                        runnable.take().expect("runnable present"),
-                    ));
-                } else {
-                    overflow = true;
-                }
-            }
-            Ok(_) => {}
-            Err(_) => poisoned = true,
-        }
-        drop(runnable);
-        if poisoned {
-            self.fail_runtime();
-        } else if overflow {
-            self.fail_overflow();
-        }
-    }
-
-    fn spawn_realtime(&self, f: Box<dyn FnOnce() + Send>) {
-        self.enqueue_background(WorkItem::Realtime(f));
-    }
 }
 
 #[derive(Debug)]
@@ -494,7 +119,7 @@ impl EmbeddedPlatform {
         pointer_cancel_callback: PointerCancelCallback,
         post_effects: Option<PostEffectHandle>,
     ) -> anyhow::Result<Rc<Self>> {
-        let dispatcher = EmbeddedDispatcher::new();
+        let dispatcher = EmbeddedDispatcher::new()?;
         let dispatcher_trait: Arc<dyn gpui::PlatformDispatcher> = dispatcher.clone();
         let text_system = CosmicTextSystem::new_without_system_fonts("Ioskeley Mono");
         text_system.add_fonts(vec![
@@ -2361,7 +1986,6 @@ impl PlatformAtlas for EmptyAtlas {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::mpsc;
 
     #[test]
     fn vst3_navigation_and_numeric_key_translation_is_stable() {
@@ -2643,21 +2267,6 @@ mod tests {
     }
 
     #[test]
-    fn realtime_worker_is_joined_when_dispatcher_stops() {
-        let dispatcher = EmbeddedDispatcher::new();
-        let (sender, receiver) = mpsc::channel();
-        gpui::PlatformDispatcher::spawn_realtime(
-            dispatcher.as_ref(),
-            Box::new(move || sender.send(()).expect("test receiver is alive")),
-        );
-        receiver
-            .recv_timeout(Duration::from_secs(1))
-            .expect("dispatcher worker ran realtime work");
-        dispatcher.stop();
-        assert!(!dispatcher.failed());
-    }
-
-    #[test]
     fn host_logical_size_conversion_tracks_dpi_scale() {
         assert_eq!(logical_to_host_size(208, 212, 1.0), (208, 212));
         assert_eq!(logical_to_host_size(208, 212, 1.25), (260, 265));
@@ -2843,7 +2452,7 @@ mod tests {
     fn test_window_state() -> Rc<WindowState> {
         Rc::new(WindowState {
             #[cfg(any(target_os = "macos", target_os = "windows"))]
-            dispatcher: EmbeddedDispatcher::new(),
+            dispatcher: EmbeddedDispatcher::new().expect("test dispatcher starts"),
             bounds: Cell::new(Bounds::new(
                 point(px(0.0), px(0.0)),
                 size(px(10.0), px(10.0)),
