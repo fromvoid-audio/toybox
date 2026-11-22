@@ -1,5 +1,7 @@
 # Toybox
 
+[![Support me on Ko-fi](https://img.shields.io/badge/Support%20me%20on%20Ko--fi-72a4f2?style=for-the-badge&logo=kofi&logoColor=white)](https://ko-fi.com/F7X2225YCF)
+
 `toybox` is a reusable Rust framework for audio-plugin GUI and host integration.
 
 ## Quick Start
