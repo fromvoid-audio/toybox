@@ -3,7 +3,8 @@
 /// Inject default CLAP resize callbacks backed by Toybox Patchbay policy.
 ///
 /// This macro standardizes host-resize behavior across plugins: resizable by
-/// default, with an opt-out via [`GuiHostWindow::set_host_resize_policy`].
+/// default, with an opt-out via
+/// [`GuiHostWindow::set_host_resize_policy`](crate::clap::gui::GuiHostWindow::set_host_resize_policy).
 #[cfg(feature = "gui")]
 #[macro_export]
 macro_rules! patchbay_clap_resize_callbacks {
