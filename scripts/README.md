@@ -11,7 +11,8 @@ Usage:
 ./scripts/ci.sh
 ```
 
-Optional VST3 checks are enabled when `VST3_SDK_DIR` is set.
+The default checks include the embedded GPUI backend. Set `VST3_SDK_DIR` to
+enable VST3 checks and include the VST3 workspace crates in Clippy.
 
 ## `ci_local.sh`
 
@@ -40,4 +41,4 @@ Usage:
 - `check_pinned_git_deps.sh`: verifies git dependencies are pinned with `rev`.
 - `check_clap_state_enforcement.sh`: validates CLAP state helper usage.
 - `check_declarative_slot_api.sh`: enforces slot API naming conventions.
-- `check_lints.sh`: broader lint entrypoint used by existing workflows.
+- `check_lints.sh`: all-feature workspace linting. Requires `VST3_SDK_DIR`.
