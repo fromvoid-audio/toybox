@@ -63,13 +63,12 @@ impl WaveformRenderContext {
         if self.callback_samples.len() < channel_count {
             self.callback_samples.resize_with(channel_count, Vec::new);
         }
-        for channel in 0..channel_count {
-            let values = &mut self.callback_samples[channel];
+        for (channel, values) in self.callback_samples[..channel_count]
+            .iter_mut()
+            .enumerate()
+        {
             values.clear();
-            values.reserve(sample_count);
-            for sample_index in 0..sample_count {
-                values.push(sample_at(channel, sample_index));
-            }
+            values.extend((0..sample_count).map(|sample_index| sample_at(channel, sample_index)));
         }
 
         self.callback_revision = Some(sample_revision);
@@ -89,11 +88,11 @@ impl WaveformRenderContext {
         sample_count: usize,
         channel_count: usize,
     ) {
-        self.envelope_cache.ensure_from_callback_samples(
+        self.envelope_cache.ensure(
             sample_revision,
             sample_count,
             channel_count,
-            &self.callback_samples,
+            self.callback_samples.iter().map(Vec::as_slice),
         );
     }
 
@@ -105,11 +104,11 @@ impl WaveformRenderContext {
         channel_samples: &[&[f32]],
         channel_count: usize,
     ) {
-        self.envelope_cache.ensure_from_slices(
+        self.envelope_cache.ensure(
             sample_revision,
             sample_count,
-            channel_samples,
             channel_count,
+            channel_samples.iter().copied(),
         );
     }
 
@@ -296,13 +295,13 @@ impl WaveformEnvelopeCache {
         self.trees.get(channel)
     }
 
-    /// Ensure cache reflects one set of slice-backed channels.
-    fn ensure_from_slices(
+    /// Rebuild the channel trees when the source revision or dimensions change.
+    fn ensure<'a>(
         &mut self,
         sample_revision: u64,
         sample_count: usize,
-        channel_samples: &[&[f32]],
         channel_count: usize,
+        channel_samples: impl Iterator<Item = &'a [f32]>,
     ) {
         if self.revision == Some(sample_revision)
             && self.sample_count == sample_count
@@ -315,39 +314,8 @@ impl WaveformEnvelopeCache {
             self.trees
                 .resize_with(channel_count, EnvelopeMinMaxTree::default);
         }
-        for (channel, samples) in channel_samples.iter().take(channel_count).enumerate() {
-            self.trees[channel].rebuild_from_slice(&samples[..sample_count.min(samples.len())]);
-        }
-
-        self.revision = Some(sample_revision);
-        self.sample_count = sample_count;
-        self.channel_count = channel_count;
-    }
-
-    /// Ensure cache reflects one set of callback-materialized channels.
-    fn ensure_from_callback_samples(
-        &mut self,
-        sample_revision: u64,
-        sample_count: usize,
-        channel_count: usize,
-        callback_samples: &[Vec<f32>],
-    ) {
-        if self.revision == Some(sample_revision)
-            && self.sample_count == sample_count
-            && self.channel_count == channel_count
-        {
-            return;
-        }
-
-        if self.trees.len() < channel_count {
-            self.trees
-                .resize_with(channel_count, EnvelopeMinMaxTree::default);
-        }
-        for channel in 0..channel_count {
-            let Some(samples) = callback_samples.get(channel) else {
-                continue;
-            };
-            self.trees[channel].rebuild_from_slice(&samples[..sample_count.min(samples.len())]);
+        for (tree, samples) in self.trees[..channel_count].iter_mut().zip(channel_samples) {
+            tree.rebuild_from_slice(&samples[..sample_count.min(samples.len())]);
         }
 
         self.revision = Some(sample_revision);

@@ -7,24 +7,10 @@
 fn select_container_debug_border_candidate(
     candidates: &[DebugBorderCandidate],
 ) -> Option<DebugBorderCandidate> {
-    let mut best_index: Option<usize> = None;
-    for (index, candidate) in candidates.iter().copied().enumerate() {
-        match best_index {
-            None => best_index = Some(index),
-            Some(current_index) => {
-                let current = candidates[current_index];
-                let better_depth = candidate.depth > current.depth;
-                let same_depth = candidate.depth == current.depth;
-                let smaller_area = candidate_area(candidate) < candidate_area(current);
-                let same_area = candidate_area(candidate) == candidate_area(current);
-                let later_render = index > current_index;
-                if better_depth || (same_depth && (smaller_area || (same_area && later_render))) {
-                    best_index = Some(index);
-                }
-            }
-        }
-    }
-    best_index.map(|index| candidates[index])
+    candidates
+        .iter()
+        .copied()
+        .max_by_key(|candidate| (candidate.depth, std::cmp::Reverse(candidate_area(*candidate))))
 }
 
 /// Compute a comparable area metric for candidate ranking.
@@ -39,18 +25,11 @@ fn should_collect_container_debug_border_candidate(
     pointer_inside: bool,
 ) -> bool {
     #[cfg(feature = "layout-debug-borders")]
-    {
-        return should_collect_container_debug_border_candidate_with_mode(
-            kind,
-            depth,
-            pointer_inside,
-            should_draw_all_layout_debug_borders(),
-        );
-    }
+    let draw_all = should_draw_all_layout_debug_borders();
     #[cfg(not(feature = "layout-debug-borders"))]
-    {
-        should_collect_container_debug_border_candidate_with_mode(kind, depth, pointer_inside, false)
-    }
+    let draw_all = false;
+
+    should_collect_container_debug_border_candidate_with_mode(kind, depth, pointer_inside, draw_all)
 }
 
 /// Return whether a candidate should be collected under one explicit mode.
@@ -69,11 +48,13 @@ fn should_collect_container_debug_border_candidate_with_mode(
     pointer_inside
 }
 
+/// Read the opt-in for outlining every layout slot.
 #[cfg(feature = "layout-debug-borders")]
 fn should_draw_all_layout_debug_borders() -> bool {
     should_draw_all_layout_debug_borders_from_env(std::env::var("PATCHBAY_DEBUG_ALL_LAYOUT_BORDERS"))
 }
 
+/// Accept the documented truthy values for the layout border opt-in.
 #[cfg(feature = "layout-debug-borders")]
 fn should_draw_all_layout_debug_borders_from_env(
     env_value: Result<String, std::env::VarError>,
