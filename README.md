@@ -2,39 +2,12 @@
 
 <a href='https://ko-fi.com/F7X2225YCF' target='_blank'><img height='36' style='border:0px;height:36px;' src='https://storage.ko-fi.com/cdn/kofi6.png?v=6' border='0' alt='Buy Me a Coffee at ko-fi.com' /></a>
 
-`toybox` is a reusable Rust framework for audio-plugin GUI and host integration.
+Toybox is a Rust framework for audio plug-ins. It provides shared host adapters and embeds native GPUI editors in DAWs on macOS and Windows.
 
-## Quick Start
+GPUI is enabled by default. Enable `gpui-vst3` for VST3 editors or set `default-features = false` for DSP-only use. The host owns its event loop and native window lifecycle.
 
-1. Run the local preflight:
-   - `bash scripts/run_agent_request.sh`
-2. Read the project context:
-   - `docs/PROJECT.md`
-   - `docs/plans/index.md`
-3. Run local validation before submitting changes:
-   - `bash scripts/ci_local.sh`
+Run `bash scripts/run_agent_request.sh` before editing and `bash scripts/ci_local.sh` to validate changes locally.
 
-## GUI development
+[Embedded GPUI guide](docs/GPUI.md) · [Project docs](docs/README.md) · [MIT license](LICENSE)
 
-GPUI is enabled by default for new plugin editors on macOS and Windows.
-Enable `gpui-vst3` when building a VST3 editor. Toybox embeds GPUI in the
-host's native child window and leaves the host in charge of the event loop.
-DSP-only consumers can set `default-features = false`.
-
-See [the embedded GPUI guide](docs/GPUI.md) for ownership, input, and lifecycle
-requirements. Existing Radiant and Patchbay integrations remain optional during
-consumer migration.
-
-## Repository Layout
-
-- `src/`: core framework crates and shared runtime code.
-- `patchbay-gui/`: declarative GUI toolkit and rendering/runtime layers.
-- `examples/`: minimal CLAP/VST3 reference plugins.
-- `docs/`: project constraints, architecture notes, and active plans.
-- `scripts/`: local guardrail and CI helper scripts.
-
-## Development Notes
-
-- Keep plugin-specific behavior out of `toybox`; framework behavior should be generic and reusable.
-- Use Toybox host adapters and the re-exported `toybox::gpui` types for new editors; keep native host integration inside Toybox.
-- For project documentation and planning, see `docs/README.md`.
+Bundled fonts retain their own licenses. See [Ioskeley Mono](assets/IoskeleyMono/OFL.txt) and [Sometype Mono](assets/Sometype_Mono/OFL.txt).
