@@ -23,9 +23,13 @@ run_step "Validate plugin state enforcement" ./scripts/check_clap_state_enforcem
 run_step "Validate declarative slot API naming" ./scripts/check_declarative_slot_api.sh
 run_step "Test minimal CLAP example" cargo test -p toybox-minimal-clap
 run_step "Check formatting" cargo fmt --all -- --check
-run_step "Run clippy (gui feature)" cargo clippy --workspace --all-targets --features gui -- -D warnings
-run_step "Run toybox state helper tests" cargo test -p toybox clap::state
-run_step "Run toybox docs tests" cargo test -p toybox --doc
+
+lint_scope=(--workspace)
+if [[ -z "${VST3_SDK_DIR:-}" ]]; then
+  lint_scope+=(--exclude toybox-vst3-ffi --exclude toybox-minimal-vst3)
+fi
+run_step "Run clippy (gui feature)" cargo clippy "${lint_scope[@]}" --all-targets --features gui -- -D warnings
+run_step "Run toybox default-feature tests" cargo test -p toybox
 
 if [[ -n "${VST3_SDK_DIR:-}" ]]; then
   run_step "Lint toybox VST3 feature" env VST3_SDK_DIR="${VST3_SDK_DIR}" cargo clippy -p toybox --all-targets --features vst3 -- -D warnings

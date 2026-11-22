@@ -2,6 +2,7 @@
 
 #![allow(clippy::missing_docs_in_private_items)]
 
+mod dispatcher;
 mod numeric_input;
 mod platform;
 
