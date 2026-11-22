@@ -8,7 +8,7 @@ use std::io::{Read, Write};
 use clack_plugin::plugin::PluginError;
 use clack_plugin::stream::{InputStream, OutputStream};
 
-use crate::state::MAX_STATE_PAYLOAD_BYTES;
+use crate::state::{HEADER_SIZE, HeaderError, StateHeader};
 
 /// Error returned when serialized payloads exceed the supported size.
 const VERSIONED_STATE_PAYLOAD_TOO_LARGE_ERROR: &str = "Plugin state payload exceeds max size";
@@ -28,22 +28,16 @@ pub struct VersionedStatePayload {
 ///
 /// # Errors
 /// Returns an error if the stream write fails, the payload exceeds
-/// [`MAX_STATE_PAYLOAD_BYTES`], or the payload length does not fit into a
-/// `u32` header.
+/// [`MAX_STATE_PAYLOAD_BYTES`](super::MAX_STATE_PAYLOAD_BYTES), or the
+/// payload length does not fit into a `u32` header.
 pub fn write_versioned_payload(
     output: &mut OutputStream,
     magic: u32,
     version: u32,
     payload: &[u8],
 ) -> Result<(), PluginError> {
-    check_payload_length(payload.len())?;
-
-    let payload_len = u32::try_from(payload.len())
-        .map_err(|_| PluginError::Message("Plugin state payload exceeds u32 header size"))?;
-
-    output.write_all(&magic.to_le_bytes())?;
-    output.write_all(&version.to_le_bytes())?;
-    output.write_all(&payload_len.to_le_bytes())?;
+    let header = StateHeader::encode(magic, version, payload.len()).map_err(header_error)?;
+    output.write_all(&header)?;
     output.write_all(payload)?;
     Ok(())
 }
@@ -53,7 +47,7 @@ pub fn write_versioned_payload(
 /// The payload is accepted only when:
 /// - `magic` matches `expected_magic`,
 /// - `version` is listed in `supported_versions`,
-/// - `payload_len` does not exceed [`MAX_STATE_PAYLOAD_BYTES`].
+/// - `payload_len` does not exceed [`MAX_STATE_PAYLOAD_BYTES`](super::MAX_STATE_PAYLOAD_BYTES).
 ///
 /// # Errors
 /// Returns a descriptive [`PluginError::Message`] when validation fails, or an
@@ -63,20 +57,12 @@ pub fn read_versioned_payload(
     expected_magic: u32,
     supported_versions: &[u32],
 ) -> Result<VersionedStatePayload, PluginError> {
-    let magic = read_u32(input)?;
-    let version = read_u32(input)?;
-    let payload_len = read_u32(input)? as usize;
-
-    if magic != expected_magic {
-        return Err(PluginError::Message(VERSIONED_STATE_PAYLOAD_HEADER_ERROR));
-    }
-    if supported_versions.is_empty() {
-        return Err(PluginError::Message(VERSIONED_STATE_PAYLOAD_HEADER_ERROR));
-    }
-    if !supported_versions.contains(&version) {
-        return Err(PluginError::Message(VERSIONED_STATE_PAYLOAD_HEADER_ERROR));
-    }
-    check_payload_length(payload_len)?;
+    let mut bytes = [0; HEADER_SIZE];
+    input.read_exact(&mut bytes)?;
+    let StateHeader {
+        version,
+        payload_len,
+    } = StateHeader::decode(&bytes, expected_magic, supported_versions).map_err(header_error)?;
 
     let mut payload = vec![0u8; payload_len];
     input.read_exact(&mut payload)?;
@@ -84,21 +70,14 @@ pub fn read_versioned_payload(
     Ok(VersionedStatePayload { version, payload })
 }
 
-/// Validate a payload length against the framework's maximum serialized size.
-fn check_payload_length(payload_len: usize) -> Result<(), PluginError> {
-    if payload_len > MAX_STATE_PAYLOAD_BYTES {
-        return Err(PluginError::Message(
-            VERSIONED_STATE_PAYLOAD_TOO_LARGE_ERROR,
-        ));
-    }
-    Ok(())
-}
-
-/// Read a little-endian `u32` value from a CLAP stream payload header.
-fn read_u32(input: &mut InputStream) -> Result<u32, PluginError> {
-    let mut bytes = [0u8; 4];
-    input.read_exact(&mut bytes)?;
-    Ok(u32::from_le_bytes(bytes))
+/// Preserve the CLAP error messages for malformed and oversized state.
+fn header_error(error: HeaderError) -> PluginError {
+    PluginError::Message(match error {
+        HeaderError::InvalidMagic | HeaderError::UnsupportedVersion => {
+            VERSIONED_STATE_PAYLOAD_HEADER_ERROR
+        }
+        HeaderError::PayloadTooLarge => VERSIONED_STATE_PAYLOAD_TOO_LARGE_ERROR,
+    })
 }
 
 #[cfg(test)]

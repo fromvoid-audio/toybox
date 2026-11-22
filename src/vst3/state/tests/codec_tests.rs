@@ -1,6 +1,6 @@
 use crate::vst3::state::{
-    MAX_STATE_PAYLOAD_BYTES, StreamError, check_payload_length, decode_versioned_payload,
-    encode_versioned_payload, try_encode_versioned_payload,
+    MAX_STATE_PAYLOAD_BYTES, StreamError, decode_versioned_payload, encode_versioned_payload,
+    try_encode_versioned_payload,
 };
 
 const MAGIC: u32 = 0x4D475354;
@@ -9,9 +9,8 @@ const MAGIC: u32 = 0x4D475354;
 fn encode_decode_round_trip() {
     let payload = encode_versioned_payload(MAGIC, 2, &[1, 2, 3, 4]);
     assert_eq!(
-        payload.len(),
-        16,
-        "encoding should include u32 magic+version+len header"
+        payload,
+        b"TSGM\x02\x00\x00\x00\x04\x00\x00\x00\x01\x02\x03\x04"
     );
     let decoded =
         decode_versioned_payload(&payload, MAGIC, &[1, 2]).expect("payload should decode");
@@ -58,11 +57,4 @@ fn rejects_unsupported_version() {
     let err = decode_versioned_payload(&payload, 0x11111111, &[1, 2])
         .expect_err("unsupported version should fail");
     assert_eq!(err, StreamError::UnsupportedVersion);
-}
-
-#[test]
-fn encode_rejects_max_limit_boundary() {
-    assert!(check_payload_length(MAX_STATE_PAYLOAD_BYTES).is_ok());
-    let result = check_payload_length(MAX_STATE_PAYLOAD_BYTES + 1);
-    assert_eq!(result, Err(StreamError::PayloadTooLarge));
 }

@@ -1,4 +1,5 @@
-use super::{StreamError, VersionedPayload, check_payload_length};
+use super::{StreamError, VersionedPayload};
+use crate::state::{HEADER_SIZE, StateHeader};
 use toybox_vst3_ffi::ComRef;
 use toybox_vst3_ffi::Steinberg::{IBStream, IBStreamTrait, int32, kResultOk};
 
@@ -15,16 +16,11 @@ pub unsafe fn write_all(stream: *mut IBStream, bytes: &[u8]) -> Result<(), Strea
     let mut written_total = 0usize;
     while written_total < bytes.len() {
         let remaining = &bytes[written_total..];
-        let chunk = remaining.len().min(int32::MAX as usize);
+        let chunk = remaining.len().min(int32::MAX as usize) as int32;
         let mut written: int32 = 0;
-        let result = unsafe {
-            stream.write(
-                remaining.as_ptr().cast_mut().cast(),
-                chunk as int32,
-                &mut written,
-            )
-        };
-        if result != kResultOk {
+        let result =
+            unsafe { stream.write(remaining.as_ptr().cast_mut().cast(), chunk, &mut written) };
+        if result != kResultOk || written > chunk {
             return Err(StreamError::IoFailure);
         }
         if written <= 0 {
@@ -49,16 +45,10 @@ pub unsafe fn read_exact(stream: *mut IBStream, bytes: &mut [u8]) -> Result<(), 
     let mut read_total = 0usize;
     while read_total < bytes.len() {
         let remaining = &mut bytes[read_total..];
-        let chunk = remaining.len().min(int32::MAX as usize);
+        let chunk = remaining.len().min(int32::MAX as usize) as int32;
         let mut read: int32 = 0;
-        let result = unsafe {
-            stream.read(
-                remaining[..chunk].as_mut_ptr().cast(),
-                chunk as int32,
-                &mut read,
-            )
-        };
-        if result != kResultOk {
+        let result = unsafe { stream.read(remaining.as_mut_ptr().cast(), chunk, &mut read) };
+        if result != kResultOk || read > chunk {
             return Err(StreamError::IoFailure);
         }
         if read <= 0 {
@@ -96,22 +86,14 @@ pub unsafe fn read_versioned_payload(
     expected_magic: u32,
     accepted_versions: &[u32],
 ) -> Result<VersionedPayload, StreamError> {
-    let mut header = [0u8; 12];
+    let mut header = [0; HEADER_SIZE];
     // SAFETY: caller guarantees `stream` points to a valid IBStream.
     unsafe { read_exact(stream, &mut header) }?;
 
-    let magic = u32::from_le_bytes([header[0], header[1], header[2], header[3]]);
-    if magic != expected_magic {
-        return Err(StreamError::InvalidMagic);
-    }
-
-    let version = u32::from_le_bytes([header[4], header[5], header[6], header[7]]);
-    if !accepted_versions.contains(&version) {
-        return Err(StreamError::UnsupportedVersion);
-    }
-
-    let payload_len = u32::from_le_bytes([header[8], header[9], header[10], header[11]]) as usize;
-    check_payload_length(payload_len)?;
+    let StateHeader {
+        version,
+        payload_len,
+    } = StateHeader::decode(&header, expected_magic, accepted_versions)?;
 
     let mut payload = vec![0u8; payload_len];
     // SAFETY: caller guarantees `stream` points to a valid IBStream.

@@ -3,10 +3,11 @@
 use clack_common::stream::{InputStream, OutputStream};
 use clack_plugin::plugin::PluginError;
 
+use crate::clap::state::MAX_STATE_PAYLOAD_BYTES;
+
 use super::{
-    MAX_STATE_PAYLOAD_BYTES, VERSIONED_STATE_PAYLOAD_HEADER_ERROR,
-    VERSIONED_STATE_PAYLOAD_TOO_LARGE_ERROR, check_payload_length, read_versioned_payload,
-    write_versioned_payload,
+    VERSIONED_STATE_PAYLOAD_HEADER_ERROR, VERSIONED_STATE_PAYLOAD_TOO_LARGE_ERROR,
+    read_versioned_payload, write_versioned_payload,
 };
 
 const MAGIC: u32 = u32::from_le_bytes(*b"TEST");
@@ -17,6 +18,10 @@ fn versioned_payload_roundtrip() {
     let mut output = OutputStream::from_writer(&mut data);
     let payload = [1u8, 2u8, 3u8, 4u8];
     write_versioned_payload(&mut output, MAGIC, 3, &payload).expect("should write payload");
+    assert_eq!(
+        data,
+        b"TEST\x03\x00\x00\x00\x04\x00\x00\x00\x01\x02\x03\x04"
+    );
 
     let mut cursor = data.as_slice();
     let mut input = InputStream::from_reader(&mut cursor);
@@ -107,17 +112,6 @@ fn read_rejects_bad_magic() {
         }
         other => panic!("unexpected error variant: {other:?}"),
     }
-}
-
-#[test]
-fn check_payload_length_matches_max() {
-    assert!(check_payload_length(MAX_STATE_PAYLOAD_BYTES).is_ok());
-    let error =
-        check_payload_length(MAX_STATE_PAYLOAD_BYTES + 1).expect_err("expected payload size check");
-    assert!(matches!(
-        error,
-        PluginError::Message(msg) if msg == VERSIONED_STATE_PAYLOAD_TOO_LARGE_ERROR
-    ));
 }
 
 #[test]
